@@ -1,0 +1,59 @@
+Write and read:
+
+	unsigned long long modulation = 0b10011;
+	unsigned long long clock_m_read;
+	unsigned long msr = 0x19a;
+	bool changed = false; //used only to avoid consecutive write operations on MSR
+	while(_thread_count > Machine::n_cpus()) { // someone else besides idles
+	if(Traits<Thread>::trace_idle)
+	    db<Thread>(TRC) << "Thread::idle(CPU=" << Machine::cpu_id() << ",this=" << running() << ")" << endl;
+	if (Machine::cpu_id() == 0) {
+	 	db<Thread>(WRN) << "THERMAL_STATUS: "<< Thermal::temperature()<<endl;
+		if (!changed) {
+				asm volatile ("rdmsr": "=A"(clock_m_read): "c"(msr));
+				db<Thread>(WRN) << "FREQUENCY -> "<< clock_m_read << " <- "<< CPU::clock() <<endl;
+				asm volatile ("wrmsr" : : "c"(msr), "A"(modulation));
+				asm volatile ("rdmsr": "=A"(clock_m_read): "c"(msr));
+				db<Thread>(WRN) << "FREQUENCY AFTER ALTER -> "<< clock_m_read << "<- "<< CPU::clock() <<endl;
+				changed = true;
+			}
+	}
+	CPU::int_enable();
+	CPU::halt();
+	if(_scheduler.schedulables() > 0) // A thread might have been woken up by another CPU
+	    yield();
+	}
+
+
+printed result:
+	
+	<0>: FREQUENCY -> 00 <- 33923534430 :<0>
+	<0>: FREQUENCY AFTER ALTER -> 19 <- 3392353440 :<0>
+
+
+clock modulation function:
+
+static void clock(Hertz new_clock) {
+	Reg32 clockm_addr = 0x19a;
+	float fator;
+	if (new_clock <= _cpu_clock * 0.0625) {
+		fator = 0.0625;	
+	} else {
+		float aux = 1./_cpu_clock;
+		fator = new_clock*aux;
+	}
+	Reg64 modulation;
+	if (fator > 0.9375) {
+		modulation = 0b01000;
+	} else {
+		fator *= (100/6.25);
+		Reg64 ifator = (Reg64) (fator);
+		if ((fator - ifator) > 0) {
+			ifator += 1;
+		}
+		modulation = 0b10000 | ifator;
+	}
+	wrmsr(clockm_addr, modulation);
+}
+
+tested on intel i7, depending on the processor architecture model it might not work
